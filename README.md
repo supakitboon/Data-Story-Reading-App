@@ -191,4 +191,4 @@ student_sentences
 
 ## License
 
-MIT
+This project is licensed under the [MIT License](LICENSE) — free to use, modify, and distribute with attribution.
