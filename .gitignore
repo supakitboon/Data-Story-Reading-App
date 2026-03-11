@@ -1,0 +1,13 @@
+# Secrets
+.streamlit/secrets.toml
+
+# Private keys
+*.pem
+
+# Python
+__pycache__/
+*.pyc
+
+# Environment
+.env
+.env.*

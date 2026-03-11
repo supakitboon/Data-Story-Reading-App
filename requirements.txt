@@ -1,0 +1,9 @@
+streamlit
+joblib
+nltk
+pandas
+mysql-connector-python
+scikit-learn
+openai>=1.0.0
+matplotlib
+sentence_transformers
