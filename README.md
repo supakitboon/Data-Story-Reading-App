@@ -12,6 +12,7 @@ A Streamlit-based educational tool that analyzes written data stories by classif
 - **Email Feedback** — Sends classification summaries to students via Gmail SMTP
 - **Database Persistence** — Stores submissions, sentence-level data, and feedback in MySQL
 - **Admin Controls** — Week management and authentication for course progression
+- **Auto Week & Image Scheduling** — Week number and chart image update automatically based on a configured course start date
 
 ## Tech Stack
 
@@ -76,8 +77,26 @@ DB_NAME = "your-db-name"
 DB_USER = "your-db-user"
 DB_PASSWORD = "your-db-password"
 ADMIN_KEY = "your-admin-password"
-CURRENT_WEEK = "5"
+
+# Auto week/image config
+COURSE_START_DATE = "YYYY-MM-DD"   # First day of Week 1 in your course
+WEEK_IMAGES = [
+  "chart_prompt.png",   # Week 1
+  "math_reading.png",   # Week 2
+  "stem_prompt.png",    # Week 3
+  "time_survey.png",    # Week 4
+  "wealth_survey.png",  # Week 5
+  "youtube_prompt.png", # Week 6
+  "AI_related_roles.png", # Week 7
+  "dog_walk.png",       # Week 8
+]
 ```
+
+> **Note:** `CURRENT_WEEK` is no longer needed. The app calculates the current week automatically from `COURSE_START_DATE` using `(today − start_date) / 7 + 1`. The chart image is picked from `WEEK_IMAGES` by week index, so both update on their own — no manual changes required each week.
+
+#### Changing the week image schedule
+
+Edit `WEEK_IMAGES` in `secrets.toml` (or Heroku config vars) to assign a different chart image to each week. Filenames refer to images in the `images/` directory. You can repeat filenames across weeks if needed.
 
 ### 3. Run the app
 

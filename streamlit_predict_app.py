@@ -434,9 +434,26 @@ The Data Story Feedback Team
 # =========================
 def current_week_default() -> int:
     try:
+        start_str = st.secrets.get("COURSE_START_DATE", None)
+        if start_str:
+            from datetime import date
+            start = date.fromisoformat(str(start_str))
+            week = (date.today() - start).days // 7 + 1
+            return max(1, week)
         return int(st.secrets.get("CURRENT_WEEK", 5))
     except Exception:
         return 5
+
+
+def current_week_image() -> str:
+    try:
+        images = list(st.secrets.get("WEEK_IMAGES", []))
+        week = st.session_state.week_number
+        if images and 1 <= week <= len(images):
+            return f"images/{images[week - 1]}"
+    except Exception:
+        pass
+    return "images/dog_walk.png"
 
 
 if "week_number" not in st.session_state:
@@ -449,7 +466,7 @@ st.markdown(f"**Week:** {int(st.session_state.week_number)}")
 # =========================
 st.title("✨ Show or Tell Prediction App ✨")
 st.markdown("### Data Story Prompt")
-st.image("images/dog_walk.png", caption="Use this chart to write your data story.")
+st.image(current_week_image(), caption="Use this chart to write your data story.")
 st.write("---")
 
 if "page" not in st.session_state:
