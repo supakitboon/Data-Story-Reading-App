@@ -156,42 +156,52 @@ Set the secrets as Heroku config vars instead of using `secrets.toml`.
 
 ### Database Schema
 
-```
-students
-├── student_id (PK, AUTO_INCREMENT)
-├── full_name
-└── email (UNIQUE)
+```mermaid
+erDiagram
+    students ||--o{ student_inputs : "submits"
+    weeks ||--o{ student_inputs : "contains"
+    weeks ||--o{ student_sentences : "tracks"
+    student_inputs ||--|{ student_sentences : "comprises"
 
-weeks
-├── week_id (PK, AUTO_INCREMENT)
-├── week_number (UNIQUE)
-└── label
+    students {
+        int student_id PK
+        string full_name
+        string email UK
+    }
 
-student_inputs
-├── input_id (PK, AUTO_INCREMENT)
-├── student_id (FK → students)
-├── week_id (FK → weeks)
-├── student_name
-├── email
-├── title
-├── story
-├── total_sentences
-├── show_sentences
-├── tell_sentences
-├── reflection
-├── helpfulness
-└── comments
+    weeks {
+        int week_id PK
+        int week_number UK
+        string label
+    }
 
-student_sentences
-├── sentence_id (PK, AUTO_INCREMENT)
-├── input_id (FK → student_inputs)
-├── week_id (FK → weeks)
-├── sentence_idx
-├── sentence_text
-├── model_label
-├── student_agree
-├── highlight_words
-└── explanation
+    student_inputs {
+        int input_id PK
+        int student_id FK
+        int week_id FK
+        string student_name
+        string email
+        string title
+        text story
+        int total_sentences
+        int show_sentences
+        int tell_sentences
+        text reflection
+        string helpfulness
+        text comments
+    }
+
+    student_sentences {
+        int sentence_id PK
+        int input_id FK
+        int week_id FK
+        int sentence_idx
+        text sentence_text
+        string model_label
+        boolean student_agree
+        string highlight_words
+        text explanation
+    }
 ```
 
 ### External API Usage
