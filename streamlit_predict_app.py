@@ -28,6 +28,7 @@ except:
 # =========================
 def get_secret(name: str):
     try:
+  
         return st.secrets[name]
     except Exception:
         return None
@@ -39,6 +40,7 @@ def get_secret(name: str):
 EMAIL_ADDRESS = (get_secret("EMAIL_ADDRESS") or "").strip()
 EMAIL_PASSWORD = (get_secret("EMAIL_PASSWORD") or "").strip()
 if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
+    print(EMAIL_ADDRESS, EMAIL_PASSWORD)
     st.error(
         "Email creds missing. Set EMAIL_ADDRESS and EMAIL_PASSWORD "
         "(Gmail App Password) in Streamlit Secrets."
@@ -440,9 +442,9 @@ def current_week_default() -> int:
             start = date.fromisoformat(str(start_str))
             week = (date.today() - start).days // 7 + 1
             return max(1, week)
-        return int(st.secrets.get("CURRENT_WEEK", 5))
+        return int(st.secrets.get("CURRENT_WEEK", 1))
     except Exception:
-        return 5
+        return 1
 
 
 def current_week_image() -> str:
@@ -669,30 +671,24 @@ Sentence: "{sentence}"
             value=st.session_state.get("common_reason", ""),
         )
 
-        if st.button("Next: Reflection & Email"):
-            st.session_state.analysis_done = True
-            st.session_state.feedback_complete = True
-
-    elif st.session_state.get("feedback_complete"):
-        st.markdown("### Reflection")
+        st.markdown("## Reflection")
         reflection = st.text_area(
-            "What did you learn from this feedback?", key="reflection"
+            "What did you learn from this feedback?",
+            value=st.session_state.get("reflection", ""),
+            key="reflection_input"
         )
 
         if st.button("Submit Feedback & Send Email"):
-
             student_id = get_or_create_student(name, email_addr)
             week_id = get_or_create_week(week_number)
             if not student_id or not week_id:
                 st.error("Could not resolve student/week. Aborting save.")
+            elif has_existing_submission(student_id, week_id):
+                st.error(
+                    f"You've already submitted for Week {week_number}. "
+                    "Resubmissions are closed."
+                )
             else:
-                if has_existing_submission(student_id, week_id):
-                    st.error(
-                        f"You've already submitted for Week {week_number}. "
-                        "Resubmissions are closed."
-                    )
-                    st.stop()
-
                 input_id = insert_submission_and_sentences(
                     student_id,
                     week_id,
@@ -704,7 +700,7 @@ Sentence: "{sentence}"
                     st.session_state.show_sentences,
                     st.session_state.tell_sentences,
                     reflection,
-                    st.session_state.helpfulness,   # <-- new field
+                    st.session_state.helpfulness,
                     st.session_state.common_reason,
                     st.session_state.sentence_rows,
                 )
@@ -734,9 +730,10 @@ Sentence: "{sentence}"
                 else:
                     st.error("❌ Could not save submission. Email not sent.")
 
-        if st.button("Restart"):
-            st.session_state.clear()
-            st.rerun()
+            if st.button("Restart"):
+                st.session_state.clear()
+                st.rerun()
+
 
 
 
