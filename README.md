@@ -101,7 +101,7 @@ Edit `WEEK_IMAGES` in `secrets.toml` (or Heroku config vars) to assign a differe
 ### 3. Run the app
 
 ```bash
-streamlit run streamlit_predict_app.py
+streamlit run streamlit_predict_app.py or python -m streamlit run streamlit_predict_app.py 
 ```
 
 The app will be available at `http://localhost:8501`.
