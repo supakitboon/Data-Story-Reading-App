@@ -1,17 +1,16 @@
 # Data-Story-Reading-App
 
-A Streamlit-based educational tool that analyzes written data stories by classifying sentences as **"Show"** (descriptive observations) or **"Tell"** (interpretive claims). Built to help students improve their data storytelling skills through AI-powered feedback.
+A Streamlit-based educational tool that analyzes written data stories by classifying sentences as **"Show"** (descriptive observations), **"Tell"** (interpretive claims), or **"Sentence Fragment"** (non-sentences). Built to help students improve their data storytelling skills through AI-powered feedback.
 
 ## Features
 
-- **Sentence Classification** — Classifies each sentence using a pre-trained Logistic Regression model with TF-IDF vectorization
+- **Sentence Classification** — Classifies each sentence as Show, Tell, or Sentence Fragment using OpenRouter AI (Google Gemini)
 - **AI-Generated Explanations** — Provides contextual justifications for each classification via OpenRouter API
-- **Key Phrase Highlighting** — Uses sentence-transformers (All-MiniLM-L6-v2) to highlight relevant Show/Tell indicator phrases
+- **Key Phrase Highlighting** — LLM identifies and highlights 1–3 verbatim key phrases that best indicate why a sentence is Show or Tell
 - **Student Feedback Collection** — Students can agree/disagree with classifications and leave reflections
-- **Visual Breakdown** — Matplotlib charts showing Show vs Tell distribution
+- **Visual Breakdown** — Matplotlib charts showing Show vs Tell vs Sentence Fragment distribution
 - **Email Feedback** — Sends classification summaries to students via Gmail SMTP
 - **Database Persistence** — Stores submissions, sentence-level data, and feedback in MySQL
-- **Admin Controls** — Week management and authentication for course progression
 - **Auto Week & Image Scheduling** — Week number and chart image update automatically based on a configured course start date
 
 ## Tech Stack
@@ -19,11 +18,10 @@ A Streamlit-based educational tool that analyzes written data stories by classif
 | Component | Technology |
 |-----------|------------|
 | Web Framework | Streamlit |
-| ML Classification | scikit-learn (Logistic Regression) |
 | NLP Tokenization | NLTK |
-| Semantic Embeddings | sentence-transformers |
-| Sentence Splitting | OpenAI GPT-4 mini |
-| Explanations | OpenRouter API |
+| Sentence Splitting | OpenAI GPT-4.1-mini |
+| Classification | OpenRouter API (Google Gemini `gemini-3.1-flash-lite-preview`) |
+| Highlights & Explanations | OpenRouter API (Google Gemini `gemini-3.1-flash-lite-preview`) |
 | Database | MySQL |
 | Visualization | Matplotlib |
 
@@ -37,11 +35,8 @@ Data-Story-Reading-App/
 ├── LICENSE                     # MIT License
 ├── .streamlit/
 │   └── secrets.toml            # API keys & DB credentials (not committed)
-├── models/
-│   ├── LogisticRegression_All_shots_data_model.pkl
-│   └── LogisticRegression_All_shots_data_vectorizer.pkl
 ├── utils/
-│   ├── func.py                 # Helper functions (embeddings, LLM calls, indicators)
+│   ├── func.py                 # Helper functions (LLM calls via OpenRouter)
 │   └── __init__.py
 └── images/                     # Chart prompts for student exercises
     ├── dog_walk.png
@@ -76,7 +71,6 @@ DB_PORT = "3306"
 DB_NAME = "your-db-name"
 DB_USER = "your-db-user"
 DB_PASSWORD = "your-db-password"
-ADMIN_KEY = "your-admin-password"
 
 # Auto week/image config
 COURSE_START_DATE = "YYYY-MM-DD"   # First day of Week 1 in your course
@@ -92,7 +86,7 @@ WEEK_IMAGES = [
 ]
 ```
 
-> **Note:** `CURRENT_WEEK` is no longer needed. The app calculates the current week automatically from `COURSE_START_DATE` using `(today − start_date) / 7 + 1`. The chart image is picked from `WEEK_IMAGES` by week index, so both update on their own — no manual changes required each week.
+> **Note:** The app calculates the current week automatically from `COURSE_START_DATE` using `(today − start_date) / 7 + 1`. The chart image is picked from `WEEK_IMAGES` by week index — no manual changes required each week.
 
 #### Changing the week image schedule
 
@@ -101,7 +95,9 @@ Edit `WEEK_IMAGES` in `secrets.toml` (or Heroku config vars) to assign a differe
 ### 3. Run the app
 
 ```bash
-streamlit run streamlit_predict_app.py or python -m streamlit run streamlit_predict_app.py 
+streamlit run streamlit_predict_app.py
+# or
+python -m streamlit run streamlit_predict_app.py
 ```
 
 The app will be available at `http://localhost:8501`.
@@ -128,20 +124,20 @@ Set the secrets as Heroku config vars instead of using `secrets.toml`.
        │                  │                       │
        ▼                  ▼                       ▼
 ┌─────────────┐  ┌────────────────────┐  ┌────────────────┐
-│   NLTK      │  │  ML Pipeline       │  │  MySQL         │
-│  Tokenizer  │  │                    │  │  Database      │
-│             │  │  TF-IDF Vectorizer │  │                │
-│  OpenAI API │  │  + LogisticRegr.   │  │  students      │
-│  (GPT-4.1   │  │  (models/*.pkl)    │  │  weeks         │
-│   mini)     │  │                    │  │  student_inputs │
-│  Sentence   │  │  sentence-         │  │  student_      │
-│  Splitting  │  │  transformers      │  │   sentences    │
-└─────────────┘  │  (highlighting)    │  └───────┬────────┘
+│   NLTK      │  │  OpenRouter API    │  │  MySQL         │
+│  Tokenizer  │  │  (Google Gemini)   │  │  Database      │
+│             │  │                    │  │                │
+│  OpenAI API │  │  1. Classify as    │  │  students      │
+│  (GPT-4.1   │  │     Show / Tell /  │  │  weeks         │
+│   mini)     │  │     Sentence Frag. │  │  student_inputs│
+│  Sentence   │  │                    │  │  student_      │
+│  Splitting  │  │  2. Highlight key  │  │   sentences    │
+└─────────────┘  │     phrases        │  └───────┬────────┘
                  │                    │          │
-                 │  OpenRouter API    │          ▼
-                 │  (GPT-4o-mini)     │  ┌────────────────┐
-                 │  Explanations      │  │  Gmail SMTP    │
-                 └────────────────────┘  │  Email Feedback│
+                 │  3. Generate       │          ▼
+                 │     explanations   │  ┌────────────────┐
+                 └────────────────────┘  │  Gmail SMTP    │
+                                         │  Email Feedback│
                                          └────────────────┘
 ```
 
@@ -149,8 +145,8 @@ Set the secrets as Heroku config vars instead of using `secrets.toml`.
 
 1. **Input** — Student enters name, email, story title, and writes a data story about a provided chart
 2. **Tokenization** — NLTK splits text into sentences. Long/complex sentences are further split using **OpenAI API** (GPT-4.1-mini)
-3. **Classification** — Each sentence is vectorized (TF-IDF) and classified as Show/Tell by the **local Logistic Regression model**
-4. **Enrichment** — **sentence-transformers** highlights key phrases; **OpenRouter API** (GPT-4o-mini) generates explanations
+3. **Classification** — Each sentence is sent to **OpenRouter API** (Google Gemini) and classified as Show, Tell, or Sentence Fragment
+4. **Enrichment** — The same **OpenRouter API** identifies 1–3 key highlight phrases and generates a 1–2 sentence explanation per classification
 5. **Feedback** — Student reviews classifications, agrees/disagrees, and writes a reflection
 6. **Persistence** — All data is saved to **MySQL**; a summary email is sent via **Gmail SMTP**
 
@@ -209,12 +205,13 @@ erDiagram
 | API | Model | Purpose | Called In |
 |-----|-------|---------|----------|
 | **OpenAI** | GPT-4.1-mini | Splits complex sentences into individual ones | `split_with_llm()` in `streamlit_predict_app.py` |
-| **OpenRouter** | GPT-4o-mini | Generates 1-2 sentence explanations for each classification | `call_openrouter_llm()` in `utils/func.py` |
+| **OpenRouter** | google/gemini-3.1-flash-lite-preview | Classifies sentences as Show / Tell / Sentence Fragment | `classify_sentences_with_openrouter()` |
+| **OpenRouter** | google/gemini-3.1-flash-lite-preview | Generates key phrase highlights and explanations | `call_openrouter_llm()` in `utils/func.py` |
 
 ## How It Works
 
 1. **Input** — Students enter their name, email, story title, and write a data story about a provided chart
-2. **Analysis** — Sentences are tokenized (NLTK), optionally split with GPT-4.1-mini, then classified by the ML model. Each sentence gets an AI explanation and highlighted key phrases
+2. **Analysis** — Sentences are tokenized (NLTK), optionally split with GPT-4.1-mini, then classified by Google Gemini via OpenRouter. Each sentence gets an AI explanation and highlighted key phrases
 3. **Feedback** — Students review classifications, agree or disagree, and write a reflection
 4. **Submission** — Results are saved to MySQL and a feedback email is sent to the student
 

@@ -11,3 +11,7 @@ __pycache__/
 # Environment
 .env
 .env.*
+
+#test dataset 
+test_dataset.csv
+test_dataset_balanced.csv

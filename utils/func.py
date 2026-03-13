@@ -269,14 +269,14 @@ def get_highlights_with_embeddings(sentence: str, stage_type: int,
         'highlights': highlights
     }
 
-def call_openrouter_llm(prompt: str, api_key: str, model: str = "openai/gpt-4o-mini") -> str:
+def call_openrouter_llm(prompt: str, api_key: str, model: str = "google/gemini-3.1-flash-lite-preview") -> str:
     """
     Call OpenRouter API with a prompt.
-    
+
     Args:
         prompt: Your prompt text
         api_key: OpenRouter API key
-        model: Model to use (default: "openai/gpt-4o-mini")
+        model: Model to use (default: "google/gemini-3.1-flash-lite-preview")
     
     Returns:
         The LLM's response as a string

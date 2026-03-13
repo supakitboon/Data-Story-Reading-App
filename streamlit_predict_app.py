@@ -1,13 +1,12 @@
 import os
 import re
+import json
 import smtplib
 import mysql.connector
-import joblib
 import nltk
 import streamlit as st
 import matplotlib.pyplot as plt
 from email.message import EmailMessage
-from sklearn.feature_extraction.text import TfidfVectorizer
 from openai import OpenAI
 
 st.set_page_config(initial_sidebar_state="collapsed")
@@ -58,33 +57,55 @@ if not OPENAI_API_KEY:
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # =========================
-# OpenRouter key (for explanations)
+# OpenRouter key (for classification + explanations)
 # =========================
 OPENROUTER_API_KEY = (get_secret("OPENROUTER_API_KEY") or "").strip()
+if not OPENROUTER_API_KEY:
+    st.error("Missing OPENROUTER_API_KEY in Streamlit secrets.")
+    st.stop()
 
 # =========================
-# Model + Vectorizer
+# OpenRouter sentence classifier
 # =========================
-def load_model_and_vectorizer():
+def classify_sentences_with_openrouter(sentences: list[str], api_key: str) -> list[int]:
+    """
+    Classify sentences as Show (0) or Tell (1) using OpenRouter AI.
+    Returns a list of integers: 0 = Show, 1 = Tell.
+    """
+    if not sentences:
+        return []
+
+    numbered = "\n".join(f'{i+1}. "{s}"' for i, s in enumerate(sentences))
+    prompt = (
+        'You are classifying items from student data stories as "Show", "Tell", or "Not a sentence".\n\n'
+        "Definitions:\n"
+        '- "Show" sentences are DESCRIPTIVE – they describe what is literally visible in the data/chart.\n'
+        '- "Tell" sentences are INTERPRETIVE – they make claims, draw conclusions, or interpret beyond what\'s directly visible.\n'
+        '- "Not a sentence" items are fragments, titles, headings, labels, or any text that is not a grammatically complete sentence.\n\n'
+        "Classify each item below. Return ONLY a JSON array of labels, one per item, "
+        'where each label is exactly "Show", "Tell", or "Not a sentence".\n'
+        'Example output for 4 items: ["Show", "Tell", "Not a sentence", "Show"]\n\n'
+        f"Items:\n{numbered}"
+    )
+
     try:
-        model = joblib.load("models/LogisticRegression_All_shots_data_model.pkl")
-        vectorizer = joblib.load(
-            "models/LogisticRegression_All_shots_data_vectorizer.pkl"
-        )
-        return model, vectorizer
+        raw = ufunc.call_openrouter_llm(prompt, api_key)
+        match = re.search(r"\[.*?\]", raw, re.DOTALL)
+        if match:
+            labels = json.loads(match.group())
+            if len(labels) == len(sentences):
+                def _map(l):
+                    s = str(l).strip().lower()
+                    if s == "show": return 0
+                    if s == "not a sentence": return 2
+                    return 1
+                return [_map(l) for l in labels]
     except Exception as e:
-        st.error(f"❌ Model load error: {e}")
-        st.stop()
+        print(f"[OpenRouter classify error] {e}")
 
+    # fallback: classify as Tell
+    return [1] * len(sentences)
 
-def predict_sentences(sentences, model, vectorizer):
-    tokens = [" ".join(nltk.word_tokenize(s.lower())) for s in sentences]
-    return model.predict(vectorizer.transform(tokens))
-
-
-@st.cache_resource
-def load_embedding_model():
-    return ufunc.load_embedding_model()
 
 # =========================
 # Highlight helper
@@ -527,8 +548,6 @@ if st.session_state.page == "results":
     story_title = st.session_state.story_title
     week_number = int(st.session_state.week_number)
 
-    model, vectorizer = load_model_and_vectorizer()
-
     if not st.session_state.analysis_done:
         st.markdown("## Sentence Analysis")
         st.markdown("#### Note: the underlined words are used to explain why your sentence is show or tell.")
@@ -537,13 +556,14 @@ if st.session_state.page == "results":
             # compute sentences + predictions once
             if "analysis_sentences" not in st.session_state:
                 all_sentences = []
-                all_predictions = []
 
                 for story in stories:
                     sents = smart_sentence_tokenize(story)
-                    preds = predict_sentences(sents, model, vectorizer)
                     all_sentences.extend(sents)
-                    all_predictions.extend(preds)
+
+                all_predictions = classify_sentences_with_openrouter(
+                    all_sentences, OPENROUTER_API_KEY
+                )
 
                 st.session_state.analysis_sentences = all_sentences
                 st.session_state.analysis_predictions = all_predictions
@@ -554,40 +574,59 @@ if st.session_state.page == "results":
 
             # --- compute highlights + explanations ONCE ---
             if "analysis_results" not in st.session_state:
-                embedding_model = load_embedding_model()
                 analysis_results = []
 
                 for sentence, label in zip(sentences, predictions):
-                    # ✅ use raw model label (0 = Show, 1 = Tell)
-                    stage_id = int(label)
+                    if label == 2:
+                        # Not a sentence — no highlights, explain why
+                        explanation = None
+                        if OPENROUTER_API_KEY:
+                            prompt = (
+                                'Explain in 1–2 sentences why this text is NOT a complete sentence '
+                                '(e.g. it is a fragment, title, heading, or label). '
+                                f'Text: "{sentence}"'
+                            )
+                            explanation = ufunc.call_openrouter_llm(prompt, OPENROUTER_API_KEY)
+                        analysis_results.append({
+                            "sentence": sentence,
+                            "type": "Not a sentence",
+                            "highlights": [],
+                            "explanation": explanation,
+                        })
+                        continue
 
-                    hl = ufunc.get_highlights_with_embeddings(
-                        sentence,
-                        stage_id,
-                        embedding_model,
-                        threshold=0.47,
-                    )
-
-                    explanation = None
+                    # Show (0) or Tell (1) — ask LLM for highlights + explanation together
+                    label_name = "Show" if label == 0 else "Tell"
+                    highlights, explanation = [], None
                     if OPENROUTER_API_KEY:
-                        prompt = f"""
-You are an expert in data storytelling.
-
-Definitions:
-- "Show" statements are DESCRIPTIVE – they describe what is visible in the data/chart.
-- "Tell" statements are INTERPRETIVE – they make claims, interpretations, or conclusions beyond what's directly visible.
-
-Explain in 1–2 sentences why this sentence is classified as "{hl['stage']}"
-FOCUS ON THE CHARACTERISTICS OF THE SENTENCE THAT MATCH THIS CLASSIFICATION TYPE.
-PLEASE DO NOT argue against the classification; instead, justify why it fits this category.
-Sentence: "{sentence}"
-"""
-                        explanation = ufunc.call_openrouter_llm(prompt, OPENROUTER_API_KEY)
+                        prompt = (
+                            'You are an expert in data storytelling.\n\n'
+                            'Definitions:\n'
+                            '- "Show" sentences are DESCRIPTIVE – they describe what is literally visible in the data/chart.\n'
+                            '- "Tell" sentences are INTERPRETIVE – they make claims, draw conclusions, or interpret beyond what\'s directly visible.\n\n'
+                            f'This sentence has been classified as "{label_name}".\n\n'
+                            '1. Identify 1–3 short key words or phrases (max 3 words each) directly from the sentence that best indicate it is '
+                            f'"{label_name}". Only use words that appear verbatim in the sentence.\n'
+                            '2. Explain in 1–2 sentences why this sentence is classified as '
+                            f'"{label_name}". Focus on why it fits this category.\n\n'
+                            'Return ONLY a JSON object in this exact format (no extra text):\n'
+                            '{"highlights": ["phrase1", "phrase2"], "explanation": "Your explanation here."}\n\n'
+                            f'Sentence: "{sentence}"'
+                        )
+                        try:
+                            raw = ufunc.call_openrouter_llm(prompt, OPENROUTER_API_KEY)
+                            match = re.search(r"\{.*\}", raw, re.DOTALL)
+                            if match:
+                                parsed = json.loads(match.group())
+                                highlights = parsed.get("highlights", [])
+                                explanation = parsed.get("explanation", None)
+                        except Exception as e:
+                            print(f"[LLM highlight+explain error] {e}")
 
                     analysis_results.append({
                         "sentence": sentence,
-                        "type": hl["stage"],
-                        "highlights": hl["highlights"],
+                        "type": label_name,
+                        "highlights": highlights,
                         "explanation": explanation,
                     })
 
@@ -602,10 +641,15 @@ Sentence: "{sentence}"
         total = len(sentences)
         show = sum(1 for p in predictions if p == 0)
         tell = sum(1 for p in predictions if p == 1)
+        not_sentence = sum(1 for p in predictions if p == 2)
 
         for i, (sent, label) in enumerate(zip(sentences, predictions)):
-            label_text = "Show" if label == 0 else "Tell"
-            color = "green" if label == 0 else "red"
+            if label == 0:
+                label_text, color = "Show", "green"
+            elif label == 1:
+                label_text, color = "Tell", "red"
+            else:
+                label_text, color = "Sentence Fragment", "gray"
 
             sentence_result = analysis_results[i]
             highlight_words = sentence_result["highlights"]
@@ -614,7 +658,7 @@ Sentence: "{sentence}"
             highlighted_html = highlight_sentence(sent, highlight_words)
 
             st.markdown(
-                f"<span style='color:{color}'><b><u>{label_text}:</u></b> {highlighted_html}</span>",
+                f"<span style='color:{color}'><b style='color:white'>{label_text}:</b> {highlighted_html}</span>",
                 unsafe_allow_html=True,
             )
 
@@ -650,9 +694,10 @@ Sentence: "{sentence}"
         st.write(f"Total Sentences: {total}")
         st.write(f"Show Sentences: {show}")
         st.write(f"Tell Sentences: {tell}")
+        st.write(f"Sentence Fragment: {not_sentence}")
 
         fig, ax = plt.subplots()
-        ax.bar(["Show", "Tell"], [show, tell])
+        ax.bar(["Show", "Tell", "Sentence Fragment"], [show, tell, not_sentence])
         ax.set_ylabel("Number of Sentences")
         ax.set_title("Show vs Tell Breakdown")
         st.pyplot(fig)
