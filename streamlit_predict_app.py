@@ -658,7 +658,7 @@ if st.session_state.page == "results":
             highlighted_html = highlight_sentence(sent, highlight_words)
 
             st.markdown(
-                f"<span style='color:{color}'><b style='color:white'>{label_text}:</b> {highlighted_html}</span>",
+                f"<span style='color:{color}'><b>{label_text}:</b> {highlighted_html}</span>",
                 unsafe_allow_html=True,
             )
 
