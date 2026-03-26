@@ -459,9 +459,11 @@ def current_week_default() -> int:
     try:
         start_str = st.secrets.get("COURSE_START_DATE", None)
         if start_str:
-            from datetime import date
+            from datetime import date, datetime, timedelta
             start = date.fromisoformat(str(start_str))
-            week = (date.today() - start).days // 7 + 1
+            # Weeks change at noon — subtract 12h so the day flips at 12:00 PM
+            effective_date = (datetime.now() - timedelta(hours=12)).date()
+            week = (effective_date - start).days // 7 + 1
             return max(1, week)
         return int(st.secrets.get("CURRENT_WEEK", 1))
     except Exception:
