@@ -336,6 +336,16 @@ def insert_submission_and_sentences(
     try:
         cur = conn.cursor()
 
+        # delete any existing submission for this student+week (allow resubmission)
+        cur.execute(
+            "SELECT input_id FROM student_inputs WHERE student_id=%s AND week_id=%s",
+            (student_id, week_id),
+        )
+        existing = cur.fetchone()
+        if existing:
+            cur.execute("DELETE FROM student_sentences WHERE input_id=%s", (existing[0],))
+            cur.execute("DELETE FROM student_inputs WHERE input_id=%s", (existing[0],))
+
         # parent row
         cur.execute(
             """
@@ -515,12 +525,13 @@ if st.session_state.page == "input":
         elif stories:
             _sid = get_or_create_student(student_name, email)
             _wid = get_or_create_week(st.session_state.week_number)
-            if _sid and _wid and has_existing_submission(_sid, _wid):
-                st.error(
-                    f"You've already submitted for Week {int(st.session_state.week_number)}. "
-                    "Resubmissions are closed."
-                )
-            else:
+            # if _sid and _wid and has_existing_submission(_sid, _wid):
+            #     st.error(
+            #         f"You've already submitted for Week {int(st.session_state.week_number)}. "
+            #         "Resubmissions are closed."
+            #     )
+            # else:
+            if True:
                 st.session_state.page = "results"
                 st.session_state.stories = stories
                 st.session_state.student_name = student_name
@@ -730,11 +741,11 @@ if st.session_state.page == "results":
             week_id = get_or_create_week(week_number)
             if not student_id or not week_id:
                 st.error("Could not resolve student/week. Aborting save.")
-            elif has_existing_submission(student_id, week_id):
-                st.error(
-                    f"You've already submitted for Week {week_number}. "
-                    "Resubmissions are closed."
-                )
+            # elif has_existing_submission(student_id, week_id):
+            #     st.error(
+            #         f"You've already submitted for Week {week_number}. "
+            #         "Resubmissions are closed."
+            #     )
             else:
                 input_id = insert_submission_and_sentences(
                     student_id,
