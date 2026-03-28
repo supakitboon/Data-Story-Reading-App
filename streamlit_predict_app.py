@@ -687,7 +687,7 @@ if st.session_state.page == "results":
         # Persist for DB + email
         st.session_state.student_feedback = feedback_data
         st.session_state.sentence_rows = sentence_rows
-        st.session_state.total_sentences = total
+        st.session_state.total_sentences = show + tell
         st.session_state.show_sentences = show
         st.session_state.tell_sentences = tell
 
