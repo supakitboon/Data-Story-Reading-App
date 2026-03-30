@@ -321,15 +321,18 @@ def insert_submission_and_sentences(
     total,
     show,
     tell,
+    sentence_fragment,
+    agree_fragment,
+    disagree_fragment,
     reflection,
-    helpfulness,  # NEW: overall agreement with explanations/highlights
+    helpfulness,
     comments,
     # list of (idx, text, label, agree_int, highlight_str, explanation_str)
     sentence_rows,
 ):
-    """
-    NOTE: requires a TEXT column `helpfulness` in student_inputs.
-    """
+    # Always compute total from components to satisfy the DB check constraint
+    total = show + tell + sentence_fragment
+
     conn = get_db_connection()
     if not conn:
         return None
@@ -352,10 +355,12 @@ def insert_submission_and_sentences(
             INSERT INTO student_inputs
               (student_id, week_id,
                student_name, email, title, story,
-               total_sentences, show_sentences, tell_sentences,
+               total_sentences, show_sentences, tell_sentences, sentence_fragment,
+               agree_fragment, disagree_fragment,
                reflection, helpfulness, comments)
             VALUES (%s, %s, %s, %s, %s, %s,
-                    %s, %s, %s,
+                    %s, %s, %s, %s,
+                    %s, %s,
                     %s, %s, %s)
             """,
             (
@@ -368,6 +373,9 @@ def insert_submission_and_sentences(
                 total,
                 show,
                 tell,
+                sentence_fragment,
+                agree_fragment,
+                disagree_fragment,
                 reflection,
                 helpfulness,
                 comments,
@@ -470,9 +478,13 @@ def current_week_default() -> int:
         start_str = st.secrets.get("COURSE_START_DATE", None)
         if start_str:
             from datetime import date, datetime, timedelta
+            from zoneinfo import ZoneInfo
             start = date.fromisoformat(str(start_str))
-            # Weeks change at noon — subtract 12h so the day flips at 12:00 PM
-            effective_date = (datetime.now() - timedelta(hours=12)).date()
+            # Weeks change at noon Maryland time — use Eastern Time explicitly,
+            # then subtract 12h so the day flips at 12:00 PM ET (not server time)
+            eastern = ZoneInfo("America/New_York")
+            now_et = datetime.now(tz=eastern)
+            effective_date = (now_et - timedelta(hours=12)).date()
             week = (effective_date - start).days // 7 + 1
             return max(1, week)
         return int(st.secrets.get("CURRENT_WEEK", 1))
@@ -695,12 +707,24 @@ if st.session_state.page == "results":
                 (i, sent, label_text, 1 if agree else 0, highlight_str, explanation_str)
             )
 
+        agree_fragment = sum(
+            1 for (_, _, lbl, agr, _, _) in sentence_rows
+            if lbl == "Sentence Fragment" and agr == 1
+        )
+        disagree_fragment = sum(
+            1 for (_, _, lbl, agr, _, _) in sentence_rows
+            if lbl == "Sentence Fragment" and agr == 0
+        )
+
         # Persist for DB + email
         st.session_state.student_feedback = feedback_data
         st.session_state.sentence_rows = sentence_rows
-        st.session_state.total_sentences = show + tell
+        st.session_state.total_sentences = show + tell + not_sentence
         st.session_state.show_sentences = show
         st.session_state.tell_sentences = tell
+        st.session_state.sentence_fragment = not_sentence
+        st.session_state.agree_fragment = agree_fragment
+        st.session_state.disagree_fragment = disagree_fragment
 
         st.markdown("## Summary")
         st.write(f"Week: {week_number}")
@@ -757,6 +781,9 @@ if st.session_state.page == "results":
                     st.session_state.total_sentences,
                     st.session_state.show_sentences,
                     st.session_state.tell_sentences,
+                    st.session_state.sentence_fragment,
+                    st.session_state.agree_fragment,
+                    st.session_state.disagree_fragment,
                     reflection,
                     st.session_state.helpfulness,
                     st.session_state.common_reason,
