@@ -328,6 +328,7 @@ def insert_submission_and_sentences(
     helpfulness,
     comments,
     # list of (idx, text, label, agree_int, highlight_str, explanation_str)
+    student_class,
     sentence_rows,
 ):
     # Always compute total from components to satisfy the DB check constraint
@@ -357,11 +358,11 @@ def insert_submission_and_sentences(
                student_name, email, title, story,
                total_sentences, show_sentences, tell_sentences, sentence_fragment,
                agree_fragment, disagree_fragment,
-               reflection, helpfulness, comments)
+               reflection, helpfulness, comments, Class)
             VALUES (%s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s,
                     %s, %s,
-                    %s, %s, %s)
+                    %s, %s, %s, %s)
             """,
             (
                 student_id,
@@ -379,6 +380,7 @@ def insert_submission_and_sentences(
                 reflection,
                 helpfulness,
                 comments,
+                student_class,
             ),
         )
         input_id = cur.lastrowid
@@ -526,6 +528,7 @@ if "analysis_done" not in st.session_state:
 # =========================
 if st.session_state.page == "input":
     student_name = st.text_input("Enter your name:")
+    selected_class = st.radio("Select your class:", ["Karen", "Zehra", "Neha"])
     email = st.text_input("Enter your email:")
     title = st.text_input("Enter a title for your data story:")
     input_text = st.text_area("Write your data story here:")
@@ -549,6 +552,7 @@ if st.session_state.page == "input":
                 st.session_state.student_name = student_name
                 st.session_state.student_email = email
                 st.session_state.story_title = title
+                st.session_state.selected_class = selected_class
                 for key in [
                     "analysis_sentences",
                     "analysis_predictions",
@@ -787,6 +791,7 @@ if st.session_state.page == "results":
                     reflection,
                     st.session_state.helpfulness,
                     st.session_state.common_reason,
+                    st.session_state.selected_class,
                     st.session_state.sentence_rows,
                 )
 
