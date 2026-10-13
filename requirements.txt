@@ -7,3 +7,5 @@ scikit-learn
 openai>=1.0.0
 matplotlib
 sentence_transformers
+torch
+torchvision
