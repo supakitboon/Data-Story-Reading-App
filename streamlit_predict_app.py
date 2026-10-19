@@ -260,21 +260,18 @@ def get_or_create_week(week_number: int, label: str | None = None):
         lbl = label if label else f"Week {int(week_number)}"
         cur.execute(
             """
-            INSERT INTO weeks (week_number, label)
-            VALUES (%s, %s)
+            INSERT INTO weeks (week_id, week_number, label)
+            VALUES (%s, %s, %s)
             ON DUPLICATE KEY UPDATE label = COALESCE(VALUES(label), label)
             """,
-            (int(week_number), lbl),
+            (int(week_number), int(week_number), lbl),
         )
-        if cur.lastrowid:
-            week_id = cur.lastrowid
-        else:
-            cur.execute(
-                "SELECT week_id FROM weeks WHERE week_number=%s",
-                (int(week_number),),
-            )
-            row = cur.fetchone()
-            week_id = row[0] if row else None
+        cur.execute(
+            "SELECT week_id FROM weeks WHERE week_number=%s",
+            (int(week_number),),
+        )
+        row = cur.fetchone()
+        week_id = row[0] if row else None
         conn.commit()
         return week_id
     except mysql.connector.Error as err:
@@ -528,7 +525,7 @@ if "analysis_done" not in st.session_state:
 # =========================
 if st.session_state.page == "input":
     student_name = st.text_input("Enter your name:")
-    selected_class = st.radio("Select your class:", ["Karen", "Zehra", "Neha"])
+    selected_class = st.radio("Select your class:", ["Karen", "Zehra", "Justine"])
     email = st.text_input("Enter your email:")
     title = st.text_input("Enter a title for your data story:")
     input_text = st.text_area("Write your data story here:")
