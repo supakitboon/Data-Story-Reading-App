@@ -10,7 +10,7 @@ A Streamlit-based educational tool that analyzes written data stories by classif
 - **Student Feedback Collection** — Students can agree/disagree with classifications and leave reflections
 - **Visual Breakdown** — Matplotlib charts showing Show vs Tell vs Sentence Fragment distribution
 - **Email Feedback** — Sends classification summaries to students via Gmail SMTP
-- **Database Persistence** — Stores submissions, sentence-level data, and feedback in MySQL
+- **Database Persistence** — Stores every submission as its own MySQL row. A student can submit the same week again; earlier attempts and their sentences stay in the database.
 - **Auto Week & Image Scheduling** — Week number and chart image update automatically based on a configured course start date
 
 ## Tech Stack
@@ -148,7 +148,7 @@ Set the secrets as Heroku config vars instead of using `secrets.toml`.
 3. **Classification** — Each sentence is sent to **OpenRouter API** (Google Gemini) and classified as Show, Tell, or Sentence Fragment
 4. **Enrichment** — The same **OpenRouter API** identifies 1–3 key highlight phrases and generates a 1–2 sentence explanation per classification
 5. **Feedback** — Student reviews classifications, agrees/disagrees, and writes a reflection
-6. **Persistence** — All data is saved to **MySQL**; a summary email is sent via **Gmail SMTP**
+6. **Persistence** — Each submit inserts a new `student_inputs` row (attempt 1, 2, 3, … for that student and week) and new `student_sentences` rows. A summary email is sent via **Gmail SMTP**. Nothing is deleted or overwritten.
 
 ### Database Schema
 
@@ -175,6 +175,8 @@ erDiagram
         int input_id PK
         int student_id FK
         int week_id FK
+        int attempt_number
+        datetime submitted_at
         string student_name
         string email
         string title
@@ -182,9 +184,13 @@ erDiagram
         int total_sentences
         int show_sentences
         int tell_sentences
+        int sentence_fragment
+        int agree_fragment
+        int disagree_fragment
         text reflection
         string helpfulness
         text comments
+        string Class
     }
 
     student_sentences {
@@ -200,6 +206,24 @@ erDiagram
     }
 ```
 
+`student_inputs` keeps every attempt. The unique key is `(student_id, week_id, attempt_number)`. Week stays in that key because each week is its own assignment and attempt numbers restart every week. `input_id` stays the primary key, so existing `student_sentences` rows still point at the attempt that created them.
+
+There is no teacher page in this app. In DBeaver:
+
+- `student_inputs_latest` is one current row per student per week (highest attempt number). Use this where a report used to assume a single result.
+- `student_attempts` is every attempt, with `attempt_number`, `submitted_at`, and `is_latest`.
+- Sentence text stays on `student_sentences`, joined by `input_id`.
+
+```sql
+SELECT * FROM student_inputs_latest;
+
+SELECT student_id, week_id, attempt_number, submitted_at, is_latest, title
+FROM student_attempts
+ORDER BY student_id, week_id, attempt_number;
+```
+
+The live database is not in this repo. Apply `migrations/2026_10_21_keep_submission_attempts.sql` on the app database before using this version of the app. Part A of that script is read-only and is the checklist for what to confirm in DBeaver (engine, existing unique indexes, and whether any student already has more than one row for a week).
+
 ### External API Usage
 
 | API | Model | Purpose | Called In |
@@ -213,7 +237,7 @@ erDiagram
 1. **Input** — Students enter their name, email, story title, and write a data story about a provided chart
 2. **Analysis** — Sentences are tokenized (NLTK), optionally split with GPT-4.1-mini, then classified by Google Gemini via OpenRouter. Each sentence gets an AI explanation and highlighted key phrases
 3. **Feedback** — Students review classifications, agree or disagree, and write a reflection
-4. **Submission** — Results are saved to MySQL and a feedback email is sent to the student
+4. **Submission** — The attempt is inserted as a new row. The student is told which attempt number was saved, and a feedback email is sent. Earlier attempts for that week remain in MySQL.
 
 ## License
 
