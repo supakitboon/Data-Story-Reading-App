@@ -12,6 +12,7 @@ from openai import OpenAI
 st.set_page_config(initial_sidebar_state="collapsed")
 
 import utils.func as ufunc  # embedding + OpenRouter helpers
+from utils.submissions import save_submission
 
 # =========================
 # NLTK
@@ -286,28 +287,6 @@ def get_or_create_week(week_number: int, label: str | None = None):
             pass
 
 
-def has_existing_submission(student_id: int, week_id: int) -> bool:
-    conn = get_db_connection()
-    if not conn:
-        return False
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT 1 FROM student_inputs WHERE student_id=%s AND week_id=%s LIMIT 1",
-            (student_id, week_id),
-        )
-        return cur.fetchone() is not None
-    except mysql.connector.Error as err:
-        st.error(f"DB error checking existing submission: {err}")
-        return False
-    finally:
-        try:
-            cur.close()
-            conn.close()
-        except Exception:
-            pass
-
-
 def insert_submission_and_sentences(
     student_id,
     week_id,
@@ -328,76 +307,43 @@ def insert_submission_and_sentences(
     student_class,
     sentence_rows,
 ):
-    # Always compute total from components to satisfy the DB check constraint
-    total = show + tell + sentence_fragment
+    """Insert one new attempt. Previous attempts for this student and week stay.
+
+    ``total`` is ignored. The stored total is show + tell + sentence_fragment
+    so the database check constraint stays satisfied.
+
+    Requires the attempt_number / submitted_at migration in
+    migrations/2026_10_21_keep_submission_attempts.sql. Returns
+    {"input_id", "attempt_number"}, or None if the save failed.
+    """
+    del total  # recomputed inside save_submission
 
     conn = get_db_connection()
     if not conn:
         return None
     try:
         cur = conn.cursor()
-
-        # delete any existing submission for this student+week (allow resubmission)
-        cur.execute(
-            "SELECT input_id FROM student_inputs WHERE student_id=%s AND week_id=%s",
-            (student_id, week_id),
+        saved = save_submission(
+            cur,
+            student_id=student_id,
+            week_id=week_id,
+            student_name=student_name,
+            email=email,
+            title=title,
+            story=story,
+            show=show,
+            tell=tell,
+            sentence_fragment=sentence_fragment,
+            agree_fragment=agree_fragment,
+            disagree_fragment=disagree_fragment,
+            reflection=reflection,
+            helpfulness=helpfulness,
+            comments=comments,
+            student_class=student_class,
+            sentence_rows=sentence_rows,
         )
-        existing = cur.fetchone()
-        if existing:
-            cur.execute("DELETE FROM student_sentences WHERE input_id=%s", (existing[0],))
-            cur.execute("DELETE FROM student_inputs WHERE input_id=%s", (existing[0],))
-
-        # parent row
-        cur.execute(
-            """
-            INSERT INTO student_inputs
-              (student_id, week_id,
-               student_name, email, title, story,
-               total_sentences, show_sentences, tell_sentences, sentence_fragment,
-               agree_fragment, disagree_fragment,
-               reflection, helpfulness, comments, Class)
-            VALUES (%s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s,
-                    %s, %s,
-                    %s, %s, %s, %s)
-            """,
-            (
-                student_id,
-                week_id,
-                student_name,
-                email,
-                title,
-                story,
-                total,
-                show,
-                tell,
-                sentence_fragment,
-                agree_fragment,
-                disagree_fragment,
-                reflection,
-                helpfulness,
-                comments,
-                student_class,
-            ),
-        )
-        input_id = cur.lastrowid
-
-        # sentence rows (with highlight_words + explanation)
-        cur.executemany(
-            """
-            INSERT INTO student_sentences
-              (input_id, week_id, sentence_idx, sentence_text, model_label,
-               student_agree, highlight_words, explanation)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            [
-                (input_id, week_id, idx, text, label, agree, highlights, expl)
-                for (idx, text, label, agree, highlights, expl) in sentence_rows
-            ],
-        )
-
         conn.commit()
-        return input_id
+        return saved
     except mysql.connector.Error as err:
         conn.rollback()
         st.error(f"⚠️ MySQL Error (rolled back): {err}")
@@ -421,15 +367,21 @@ def _masked(s: str) -> str:
     return s[:2] + "…"
 
 
-def send_feedback_email(email, student_name, title, summary, feedback_list, reflection, comment) -> bool:
+def send_feedback_email(email, student_name, title, summary, feedback_list, reflection, comment, attempt_number=None) -> bool:
     changed = sum(1 for item in feedback_list if not item["agree"])
+    attempt_line = (
+        f"This is attempt {int(attempt_number)} for this week. Earlier attempts are kept.\n\n"
+        if attempt_number is not None
+        else ""
+    )
     details = "🧾 Sentence-by-sentence feedback:\n"
     for item in feedback_list:
         status = "✅ Agreed" if item["agree"] else "❌ Did NOT agree"
         details += f"- [{item['label']}] {item['sentence']}\n  ➤ {status}\n\n"
 
     msg = EmailMessage()
-    msg["Subject"] = f"📊 Feedback for Your Data Story: {title}"
+    attempt_subject = f" (Attempt {int(attempt_number)})" if attempt_number is not None else ""
+    msg["Subject"] = f"📊 Feedback for Your Data Story{attempt_subject}: {title}"
     msg["From"] = EMAIL_ADDRESS
     msg["To"] = email
     msg["Reply-To"] = EMAIL_ADDRESS
@@ -437,7 +389,7 @@ def send_feedback_email(email, student_name, title, summary, feedback_list, refl
         f"""
 Dear {student_name},
 
-Thank you for submitting your data story titled "{title}". Our system analyzed your submission and identified a total of {summary["total_sentences"]} sentences. Of these, {summary["show_sentences"]} were categorized as 'Show' and {summary["tell_sentences"]} as 'Tell'. You disagreed with the model's classification on {changed} sentence(s).
+Thank you for submitting your data story titled "{title}". {attempt_line}Our system analyzed your submission and identified a total of {summary["total_sentences"]} sentences. Of these, {summary["show_sentences"]} were categorized as 'Show' and {summary["tell_sentences"]} as 'Tell'. You disagreed with the model's classification on {changed} sentence(s).
 
 {details}
 Your comment:
@@ -535,34 +487,27 @@ if st.session_state.page == "input":
         if not student_name or not email or not title:
             st.error("Please fill in your name, email, and story title before continuing.")
         elif stories:
-            _sid = get_or_create_student(student_name, email)
-            _wid = get_or_create_week(st.session_state.week_number)
-            # if _sid and _wid and has_existing_submission(_sid, _wid):
-            #     st.error(
-            #         f"You've already submitted for Week {int(st.session_state.week_number)}. "
-            #         "Resubmissions are closed."
-            #     )
-            # else:
-            if True:
-                st.session_state.page = "results"
-                st.session_state.stories = stories
-                st.session_state.student_name = student_name
-                st.session_state.student_email = email
-                st.session_state.story_title = title
-                st.session_state.selected_class = selected_class
-                for key in [
-                    "analysis_sentences",
-                    "analysis_predictions",
-                    "student_feedback",
-                    "sentence_rows",
-                    "total_sentences",
-                    "show_sentences",
-                    "tell_sentences",
-                    "common_reason",
-                    "helpfulness",
-                    "analysis_results",
-                ]:
-                    st.session_state.pop(key, None)
+            # A later submit for the same student and week is a new attempt.
+            # It does not replace the previous one.
+            st.session_state.page = "results"
+            st.session_state.stories = stories
+            st.session_state.student_name = student_name
+            st.session_state.student_email = email
+            st.session_state.story_title = title
+            st.session_state.selected_class = selected_class
+            for key in [
+                "analysis_sentences",
+                "analysis_predictions",
+                "student_feedback",
+                "sentence_rows",
+                "total_sentences",
+                "show_sentences",
+                "tell_sentences",
+                "common_reason",
+                "helpfulness",
+                "analysis_results",
+            ]:
+                st.session_state.pop(key, None)
 
 # =========================
 # RESULTS + REFLECTION
@@ -766,13 +711,8 @@ if st.session_state.page == "results":
             week_id = get_or_create_week(week_number)
             if not student_id or not week_id:
                 st.error("Could not resolve student/week. Aborting save.")
-            # elif has_existing_submission(student_id, week_id):
-            #     st.error(
-            #         f"You've already submitted for Week {week_number}. "
-            #         "Resubmissions are closed."
-            #     )
             else:
-                input_id = insert_submission_and_sentences(
+                saved = insert_submission_and_sentences(
                     student_id,
                     week_id,
                     name,
@@ -792,7 +732,8 @@ if st.session_state.page == "results":
                     st.session_state.sentence_rows,
                 )
 
-                if input_id:
+                if saved and saved.get("input_id"):
+                    attempt_number = saved["attempt_number"]
                     summary = {
                         "total_sentences": st.session_state.total_sentences,
                         "show_sentences": st.session_state.show_sentences,
@@ -806,13 +747,20 @@ if st.session_state.page == "results":
                         st.session_state.student_feedback,
                         reflection,
                         st.session_state.common_reason,
+                        attempt_number,
                     )
 
                     if email_ok:
-                        st.success("✅ Feedback saved and email sent!")
+                        st.success(
+                            f"✅ Feedback saved as attempt {attempt_number} "
+                            f"for Week {week_number}, and the email was sent. "
+                            "Earlier submissions for this week are kept."
+                        )
                     else:
                         st.warning(
-                            "Feedback saved to the database, but the email could not be sent."
+                            f"Feedback was saved as attempt {attempt_number} "
+                            f"for Week {week_number}, but the email could not be sent. "
+                            "Earlier submissions for this week are kept."
                         )
                 else:
                     st.error("❌ Could not save submission. Email not sent.")
