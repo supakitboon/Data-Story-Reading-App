@@ -2,6 +2,7 @@ import os
 import re
 import json
 import smtplib
+import threading
 import mysql.connector
 import nltk
 import streamlit as st
@@ -13,6 +14,16 @@ st.set_page_config(initial_sidebar_state="collapsed")
 
 import utils.func as ufunc  # embedding + OpenRouter helpers
 from utils.submissions import save_submission
+from utils.submit_guard import (
+    BUSY,
+    IDLE,
+    SPINNER_TEXT,
+    SubmitFlight,
+    on_submit_click,
+    push_notice,
+    run_submit_phase,
+    show_notice,
+)
 
 # =========================
 # NLTK
@@ -56,6 +67,47 @@ if not OPENAI_API_KEY:
     st.stop()
 
 client = OpenAI(api_key=OPENAI_API_KEY)
+
+
+def _ui(level: str, message: str, exc: BaseException | None = None) -> None:
+    """Show a status line, or hold it until the submit button finishes.
+
+    While a Reflection submit is in progress, messages are stored on the
+    in-flight record and drawn after the save instead of mid-spinner.
+    """
+    if not push_notice(st.session_state, level, message, exc):
+        show_notice(st, {"level": level, "message": message, "exc": exc})
+
+
+_SUBMIT_FLIGHTS: dict[str, SubmitFlight] = {}
+_SUBMIT_FLIGHTS_GUARD = threading.Lock()
+
+
+def _submission_flight() -> SubmitFlight:
+    """One save record per Streamlit session, outside session_state."""
+    from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+    ctx = get_script_run_ctx()
+    session_id = getattr(ctx, "session_id", None) or "default"
+    with _SUBMIT_FLIGHTS_GUARD:
+        flight = _SUBMIT_FLIGHTS.get(session_id)
+        if flight is None:
+            flight = SubmitFlight()
+            _SUBMIT_FLIGHTS[session_id] = flight
+        return flight
+
+
+def _on_feedback_submit_click() -> None:
+    flight = _submission_flight()
+    on_submit_click(st.session_state, flight, flight.lock)
+
+
+def _restart_after_feedback() -> None:
+    flight = _submission_flight()
+    flight.phase = IDLE
+    flight.notices = []
+    st.session_state.clear()
+    st.rerun()
 
 # =========================
 # OpenRouter key (for classification + explanations)
@@ -213,7 +265,7 @@ def get_db_connection():
             autocommit=False,
         )
     except mysql.connector.Error as err:
-        st.error(f"Database Connection Error: {err}")
+        _ui("error", f"Database Connection Error: {err}")
         return None
 
 
@@ -242,7 +294,7 @@ def get_or_create_student(full_name: str, email: str):
         return student_id
     except mysql.connector.Error as err:
         conn.rollback()
-        st.error(f"⚠️ MySQL Error (student): {err}")
+        _ui("error", f"⚠️ MySQL Error (student): {err}")
         return None
     finally:
         try:
@@ -277,7 +329,7 @@ def get_or_create_week(week_number: int, label: str | None = None):
         return week_id
     except mysql.connector.Error as err:
         conn.rollback()
-        st.error(f"⚠️ MySQL Error (week): {err}")
+        _ui("error", f"⚠️ MySQL Error (week): {err}")
         return None
     finally:
         try:
@@ -346,7 +398,7 @@ def insert_submission_and_sentences(
         return saved
     except mysql.connector.Error as err:
         conn.rollback()
-        st.error(f"⚠️ MySQL Error (rolled back): {err}")
+        _ui("error", f"⚠️ MySQL Error (rolled back): {err}")
         return None
     finally:
         try:
@@ -407,19 +459,99 @@ The Data Story Feedback Team
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=20) as smtp:
             smtp.login(EMAIL_ADDRESS.strip(), EMAIL_PASSWORD.strip())
             smtp.send_message(msg)
-        st.success(f"✅ Email sent to {_masked(email)}")
+        _ui("success", f"✅ Email sent to {_masked(email)}")
         return True
     except smtplib.SMTPAuthenticationError as e:
-        st.error(
+        _ui(
+            "error",
             "❌ Gmail auth failed. Use a 16-char App Password (no spaces), "
-            "approve the security alert, or regenerate the app password."
+            "approve the security alert, or regenerate the app password.",
         )
-        st.caption(f"Login user: {_masked(EMAIL_ADDRESS)} | {e.smtp_error!r}")
+        _ui("caption", f"Login user: {_masked(EMAIL_ADDRESS)} | {e.smtp_error!r}")
         return False
     except Exception as e:
-        st.error("❌ Failed to send email.")
-        st.exception(e)
+        _ui("error", "❌ Failed to send email.")
+        _ui("exception", "", e)
         return False
+
+
+def _run_feedback_submit() -> None:
+    """Save one attempt and send one email. Status lines are captured by the guard."""
+    name = st.session_state.student_name
+    email_addr = st.session_state.student_email
+    story_title = st.session_state.story_title
+    week_number = int(st.session_state.week_number)
+    reflection = st.session_state.get(
+        "reflection_for_submit",
+        st.session_state.get("reflection_input", ""),
+    )
+    helpfulness = st.session_state.get("helpfulness", "")
+    comments = st.session_state.get("common_reason", "")
+    student_class = st.session_state.selected_class
+    story = st.session_state.stories[0]
+    sentence_rows = list(st.session_state.sentence_rows)
+    feedback = list(st.session_state.student_feedback)
+    total_sentences = st.session_state.total_sentences
+    show_sentences = st.session_state.show_sentences
+    tell_sentences = st.session_state.tell_sentences
+    sentence_fragment = st.session_state.sentence_fragment
+    agree_fragment = st.session_state.agree_fragment
+    disagree_fragment = st.session_state.disagree_fragment
+
+    student_id = get_or_create_student(name, email_addr)
+    week_id = get_or_create_week(week_number)
+    if not student_id or not week_id:
+        _ui("error", "Could not resolve student/week. Aborting save.")
+        return
+
+    saved = insert_submission_and_sentences(
+        student_id,
+        week_id,
+        name,
+        email_addr,
+        story_title,
+        story,
+        total_sentences,
+        show_sentences,
+        tell_sentences,
+        sentence_fragment,
+        agree_fragment,
+        disagree_fragment,
+        reflection,
+        helpfulness,
+        comments,
+        student_class,
+        sentence_rows,
+    )
+
+    if saved and saved.get("input_id"):
+        attempt_number = saved["attempt_number"]
+        summary = {
+            "total_sentences": total_sentences,
+            "show_sentences": show_sentences,
+            "tell_sentences": tell_sentences,
+        }
+        email_ok = send_feedback_email(
+            email_addr,
+            name,
+            story_title,
+            summary,
+            feedback,
+            reflection,
+            comments,
+            attempt_number,
+        )
+        # The "Email sent to …" line is recorded inside send_feedback_email.
+        # A successful save does not add the attempt/week banner.
+        if not email_ok:
+            _ui(
+                "warning",
+                f"Feedback was saved as attempt {attempt_number} "
+                f"for Week {week_number}, but the email could not be sent. "
+                "Earlier submissions for this week are kept.",
+            )
+    else:
+        _ui("error", "❌ Could not save submission. Email not sent.")
 
 # =========================
 # Admin + Week
@@ -513,10 +645,10 @@ if st.session_state.page == "input":
 # RESULTS + REFLECTION
 # =========================
 if st.session_state.page == "results":
+    if _submission_flight().phase == BUSY:
+        st.info(SPINNER_TEXT)
+
     stories = st.session_state.stories
-    name = st.session_state.student_name
-    email_addr = st.session_state.student_email
-    story_title = st.session_state.story_title
     week_number = int(st.session_state.week_number)
 
     if not st.session_state.analysis_done:
@@ -705,69 +837,17 @@ if st.session_state.page == "results":
             value=st.session_state.get("reflection", ""),
             key="reflection_input"
         )
+        st.session_state["reflection_for_submit"] = reflection
 
-        if st.button("Submit Feedback & Send Email"):
-            student_id = get_or_create_student(name, email_addr)
-            week_id = get_or_create_week(week_number)
-            if not student_id or not week_id:
-                st.error("Could not resolve student/week. Aborting save.")
-            else:
-                saved = insert_submission_and_sentences(
-                    student_id,
-                    week_id,
-                    name,
-                    email_addr,
-                    story_title,
-                    st.session_state.stories[0],
-                    st.session_state.total_sentences,
-                    st.session_state.show_sentences,
-                    st.session_state.tell_sentences,
-                    st.session_state.sentence_fragment,
-                    st.session_state.agree_fragment,
-                    st.session_state.disagree_fragment,
-                    reflection,
-                    st.session_state.helpfulness,
-                    st.session_state.common_reason,
-                    st.session_state.selected_class,
-                    st.session_state.sentence_rows,
-                )
-
-                if saved and saved.get("input_id"):
-                    attempt_number = saved["attempt_number"]
-                    summary = {
-                        "total_sentences": st.session_state.total_sentences,
-                        "show_sentences": st.session_state.show_sentences,
-                        "tell_sentences": st.session_state.tell_sentences,
-                    }
-                    email_ok = send_feedback_email(
-                        email_addr,
-                        name,
-                        story_title,
-                        summary,
-                        st.session_state.student_feedback,
-                        reflection,
-                        st.session_state.common_reason,
-                        attempt_number,
-                    )
-
-                    if email_ok:
-                        st.success(
-                            f"✅ Feedback saved as attempt {attempt_number} "
-                            f"for Week {week_number}, and the email was sent. "
-                            "Earlier submissions for this week are kept."
-                        )
-                    else:
-                        st.warning(
-                            f"Feedback was saved as attempt {attempt_number} "
-                            f"for Week {week_number}, but the email could not be sent. "
-                            "Earlier submissions for this week are kept."
-                        )
-                else:
-                    st.error("❌ Could not save submission. Email not sent.")
-
-            if st.button("Restart"):
-                st.session_state.clear()
-                st.rerun()
+        flight = _submission_flight()
+        run_submit_phase(
+            st,
+            _run_feedback_submit,
+            flight,
+            on_click=_on_feedback_submit_click,
+            on_restart=_restart_after_feedback,
+            lock=flight.save_lock,
+        )
 
 
 
