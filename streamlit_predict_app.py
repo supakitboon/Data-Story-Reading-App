@@ -312,9 +312,10 @@ def insert_submission_and_sentences(
     ``total`` is ignored. The stored total is show + tell + sentence_fragment
     so the database check constraint stays satisfied.
 
-    Requires the attempt_number / submitted_at migration in
-    migrations/2026_10_21_keep_submission_attempts.sql. Returns
-    {"input_id", "attempt_number"}, or None if the save failed.
+    Requires the attempt_number migration in
+    migrations/2026_10_21_keep_submission_attempts.sql. The insert does
+    not set submitted_at; created_at records when the row was written.
+    Returns {"input_id", "attempt_number"}, or None if the save failed.
     """
     del total  # recomputed inside save_submission
 
