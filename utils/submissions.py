@@ -17,7 +17,6 @@ after the migration; the insert fails and the caller rolls back.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
 
@@ -32,12 +31,12 @@ INSERT INTO student_inputs
    total_sentences, show_sentences, tell_sentences, sentence_fragment,
    agree_fragment, disagree_fragment,
    reflection, helpfulness, comments, Class,
-   attempt_number, submitted_at)
+   attempt_number)
 VALUES (%s, %s, %s, %s, %s, %s,
         %s, %s, %s, %s,
         %s, %s,
         %s, %s, %s, %s,
-        %s, %s)
+        %s)
 """
 
 _LOCK_ATTEMPTS = """
@@ -105,11 +104,6 @@ def _attempt_number_from_row(row: Any) -> Any:
     return row[1]
 
 
-def utc_now_naive() -> datetime:
-    """UTC timestamp stored in ``submitted_at`` (MySQL DATETIME has no zone)."""
-    return datetime.now(timezone.utc).replace(tzinfo=None)
-
-
 def save_submission(
     cursor: Any,
     *,
@@ -129,20 +123,21 @@ def save_submission(
     comments: str | None,
     student_class: str | None,
     sentence_rows: Sequence[Sequence[Any]],
-    submitted_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Insert a new attempt and its sentences.
 
     Locks the student's existing rows for this week so two overlapping
     submits observe each other's attempt numbers. Does not modify those
     rows. Returns ``{"input_id", "attempt_number"}``.
+
+    ``submitted_at`` is not written. It duplicates ``created_at``
+    (``DEFAULT CURRENT_TIMESTAMP``), which MySQL fills on insert.
     """
     _execute(cursor, _LOCK_ATTEMPTS, (student_id, week_id))
     existing = list(cursor.fetchall() or [])
     attempt_number = next_attempt_number(
         _attempt_number_from_row(row) for row in existing
     )
-    when = submitted_at if submitted_at is not None else utc_now_naive()
     total = submission_total(show, tell, sentence_fragment)
 
     _execute(
@@ -166,7 +161,6 @@ def save_submission(
             comments,
             student_class,
             attempt_number,
-            when,
         ),
     )
     input_id = cursor.lastrowid

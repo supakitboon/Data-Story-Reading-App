@@ -63,7 +63,6 @@ class MemoryCursor:
                 comments,
                 student_class,
                 attempt_number,
-                submitted_at,
             ) = params
             row = {
                 "input_id": self._next_id,
@@ -84,7 +83,6 @@ class MemoryCursor:
                 "comments": comments,
                 "Class": student_class,
                 "attempt_number": attempt_number,
-                "submitted_at": submitted_at,
             }
             self._next_id += 1
             self.inputs.append(row)
@@ -123,7 +121,6 @@ def _save(cursor, **overrides):
         comments="",
         student_class="Karen",
         sentence_rows=[(0, "The chart shows 10.", "Show", 1, "shows", "visible")],
-        submitted_at=datetime(2026, 10, 21, 12, 0, 0),
     )
     payload.update(overrides)
     return save_submission(cursor, **payload)
@@ -140,7 +137,6 @@ class SaveSubmissionTests(unittest.TestCase):
             show=0,
             tell=1,
             sentence_rows=[(0, "Revised story.", "Tell", 0, "because", "claim")],
-            submitted_at=datetime(2026, 10, 21, 13, 0, 0),
         )
 
         self.assertEqual(first["attempt_number"], 1)
@@ -161,6 +157,13 @@ class SaveSubmissionTests(unittest.TestCase):
             if sql.lstrip().upper().startswith(("DELETE", "UPDATE", "REPLACE", "TRUNCATE"))
         ]
         self.assertEqual(destructive, [])
+        input_inserts = [
+            sql
+            for sql, _ in cursor.statements
+            if sql.lstrip().upper().startswith("INSERT INTO STUDENT_INPUTS")
+        ]
+        self.assertTrue(input_inserts)
+        self.assertNotIn("submitted_at", input_inserts[0].lower())
 
     def test_attempt_numbers_restart_each_week_and_each_student(self):
         cursor = MemoryCursor()
