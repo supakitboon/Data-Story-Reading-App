@@ -2,7 +2,6 @@ import os
 import re
 import json
 import smtplib
-import threading
 import mysql.connector
 import nltk
 import streamlit as st
@@ -19,6 +18,7 @@ from utils.submit_guard import (
     IDLE,
     SPINNER_TEXT,
     SubmitFlight,
+    get_submit_flight,
     on_submit_click,
     push_notice,
     run_submit_phase,
@@ -79,22 +79,13 @@ def _ui(level: str, message: str, exc: BaseException | None = None) -> None:
         show_notice(st, {"level": level, "message": message, "exc": exc})
 
 
-_SUBMIT_FLIGHTS: dict[str, SubmitFlight] = {}
-_SUBMIT_FLIGHTS_GUARD = threading.Lock()
-
-
 def _submission_flight() -> SubmitFlight:
-    """One save record per Streamlit session, outside session_state."""
+    """One save record per Streamlit session, outside the rerun script."""
     from streamlit.runtime.scriptrunner import get_script_run_ctx
 
     ctx = get_script_run_ctx()
     session_id = getattr(ctx, "session_id", None) or "default"
-    with _SUBMIT_FLIGHTS_GUARD:
-        flight = _SUBMIT_FLIGHTS.get(session_id)
-        if flight is None:
-            flight = SubmitFlight()
-            _SUBMIT_FLIGHTS[session_id] = flight
-        return flight
+    return get_submit_flight(session_id)
 
 
 def _on_feedback_submit_click() -> None:
