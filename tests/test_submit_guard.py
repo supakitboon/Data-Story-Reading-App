@@ -10,17 +10,24 @@ from pathlib import Path
 
 from utils.submit_guard import (
     BUTTON_KEY,
+    DONE,
     IDLE,
+    NOTICES_KEY,
     PHASE_KEY,
     RESTART_KEY,
     SAVING_LABEL,
+    SETTLE,
     SPINNER_TEXT,
     SUBMIT_LABEL,
     SubmitFlight,
+    clear_submit_flights,
+    get_submit_flight,
     on_submit_click,
     push_notice,
     run_submit_phase,
 )
+
+EMAIL_SENT = "✅ Email sent to ab…@school.edu"
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +46,7 @@ class FakeSt:
         self.session_state = {}
         self.events = []
         self.click_return = False
+        self.restart_return = False
         self._events_lock = threading.Lock()
 
     def _record(self, event):
@@ -47,6 +55,8 @@ class FakeSt:
 
     def button(self, label, key=None, disabled=False, on_click=None):
         self._record(("button", label, disabled, key))
+        if key == RESTART_KEY:
+            return self.restart_return
         return self.click_return
 
     def spinner(self, text):
@@ -109,7 +119,7 @@ class SubmitOnceTests(unittest.TestCase):
 
         def perform():
             saves.append("save")
-            push_notice(None, "success", "✅ Email sent to ab…@school.edu")
+            push_notice(None, "success", EMAIL_SENT)
 
         self.assertEqual(_drive(st, flight, perform), "rerun")
         self.assertEqual(saves, ["save"])
@@ -130,10 +140,43 @@ class SubmitOnceTests(unittest.TestCase):
             "done",
         )
         self.assertEqual(saves, ["save"])
-        self.assertEqual(flight.phase, IDLE)
-        self.assertEqual(st.session_state[PHASE_KEY], IDLE)
+        self.assertEqual(flight.phase, DONE)
+        self.assertEqual(st.session_state[PHASE_KEY], DONE)
+        self.assertEqual(flight.notices[0]["message"], EMAIL_SENT)
+        self.assertEqual(st.session_state[NOTICES_KEY][0]["message"], EMAIL_SENT)
         self.assertIn(("button", SUBMIT_LABEL, False, BUTTON_KEY), st.events)
-        self.assertIn(("success", "✅ Email sent to ab…@school.edu"), st.events)
+        self.assertIn(("success", EMAIL_SENT), st.events)
+        self.assertIn(("button", "Restart", False, RESTART_KEY), st.events)
+        self.assertFalse(any(REMOVED_SUCCESS in str(event) for event in st.events))
+
+    def test_email_sent_notice_stays_visible_on_the_following_run(self):
+        st = FakeSt()
+        flight = SubmitFlight()
+        saves = []
+
+        def perform():
+            saves.append("save")
+            push_notice(None, "success", EMAIL_SENT)
+
+        self.assertEqual(_drive(st, flight, perform), "rerun")
+        self.assertEqual(
+            _drive(st, flight, perform, prerun_click=False, on_restart=lambda: None),
+            "done",
+        )
+        self.assertEqual(flight.phase, DONE)
+        self.assertTrue(flight.notices)
+
+        st.events.clear()
+        self.assertEqual(
+            _drive(st, flight, perform, prerun_click=False, on_restart=lambda: None),
+            "done",
+        )
+        self.assertEqual(saves, ["save"])
+        self.assertEqual(flight.phase, DONE)
+        self.assertEqual(flight.notices[0]["message"], EMAIL_SENT)
+        self.assertEqual(st.session_state[NOTICES_KEY][0]["message"], EMAIL_SENT)
+        self.assertIn(("success", EMAIL_SENT), st.events)
+        self.assertIn(("button", SUBMIT_LABEL, False, BUTTON_KEY), st.events)
         self.assertIn(("button", "Restart", False, RESTART_KEY), st.events)
         self.assertFalse(any(REMOVED_SUCCESS in str(event) for event in st.events))
 
@@ -144,7 +187,7 @@ class SubmitOnceTests(unittest.TestCase):
 
         def perform():
             saves.append("save")
-            push_notice(None, "success", "✅ Email sent to ab…@school.edu")
+            push_notice(None, "success", EMAIL_SENT)
 
         def on_click():
             on_submit_click(st.session_state, flight, flight.lock)
@@ -161,7 +204,8 @@ class SubmitOnceTests(unittest.TestCase):
         self.assertEqual(flight.token, 1)
         self.assertEqual(_drive(st, flight, perform, prerun_click=False), "done")
         self.assertEqual(saves, ["save"])
-        self.assertEqual(flight.phase, IDLE)
+        self.assertEqual(flight.phase, DONE)
+        self.assertEqual(flight.notices[0]["message"], EMAIL_SENT)
 
     def test_later_click_saves_another_attempt(self):
         st = FakeSt()
@@ -191,9 +235,13 @@ class SubmitOnceTests(unittest.TestCase):
 
         _drive(st, flight, perform)
         _drive(st, flight, perform, prerun_click=False)
+        st.events.clear()
+        _drive(st, flight, perform, prerun_click=False)
+        self.assertEqual(flight.phase, DONE)
         self.assertIn(("warning", warning), st.events)
         self.assertIn(("error", "❌ Failed to send email."), st.events)
         self.assertFalse(any(event[0] == "success" for event in st.events))
+        self.assertFalse(any(REMOVED_SUCCESS in str(event) for event in st.events))
 
     def test_overlapping_runs_save_once(self):
         st = FakeSt()
@@ -270,7 +318,10 @@ class SubmitOnceTests(unittest.TestCase):
         self.assertEqual(calls, ["save"])
         self.assertTrue(flight.save_finished)
         _drive(st, flight, perform, prerun_click=False)
+        st.events.clear()
+        _drive(st, flight, perform, prerun_click=False)
         self.assertEqual(calls, ["save"])
+        self.assertEqual(flight.phase, DONE)
         self.assertIn("db down", str(st.events))
 
     def test_app_drops_the_attempt_success_banner_and_keeps_failure_copy(self):
@@ -281,6 +332,103 @@ class SubmitOnceTests(unittest.TestCase):
         self.assertIn("Email sent to", source)
         self.assertIn("Could not resolve student/week. Aborting save.", source)
         self.assertIn("❌ Could not save submission. Email not sent.", source)
+        self.assertIn("get_submit_flight", source)
+        self.assertNotIn("_SUBMIT_FLIGHTS", source)
+
+    def test_fresh_flight_still_shows_the_mirrored_email_notice(self):
+        # Streamlit execs the app as a new __main__ each run. A flight dict
+        # on that script is empty on the settle run; the session copy is what
+        # the busy run managed to store.
+        st = FakeSt()
+        saves = []
+
+        def perform():
+            saves.append("save")
+            push_notice(None, "success", EMAIL_SENT)
+
+        busy = SubmitFlight()
+        self.assertEqual(_drive(st, busy, perform), "rerun")
+        self.assertEqual(st.session_state[PHASE_KEY], SETTLE)
+        self.assertEqual(st.session_state[NOTICES_KEY][0]["message"], EMAIL_SENT)
+
+        settled = SubmitFlight()
+        st.events.clear()
+        self.assertEqual(
+            _drive(st, settled, perform, prerun_click=False, on_restart=lambda: None),
+            "done",
+        )
+        self.assertEqual(saves, ["save"])
+        self.assertIn(("success", EMAIL_SENT), st.events)
+        self.assertEqual(st.session_state[PHASE_KEY], DONE)
+        self.assertEqual(st.session_state[NOTICES_KEY][0]["message"], EMAIL_SENT)
+
+        later = SubmitFlight()
+        st.events.clear()
+        self.assertEqual(
+            _drive(st, later, perform, prerun_click=False, on_restart=lambda: None),
+            "done",
+        )
+        self.assertEqual(saves, ["save"])
+        self.assertEqual(later.phase, IDLE)
+        self.assertIn(("success", EMAIL_SENT), st.events)
+        self.assertEqual(st.session_state[NOTICES_KEY][0]["message"], EMAIL_SENT)
+        self.assertFalse(any(REMOVED_SUCCESS in str(event) for event in st.events))
+
+    def test_session_flight_keeps_the_notice_across_lookups(self):
+        clear_submit_flights()
+        self.addCleanup(clear_submit_flights)
+        st = FakeSt()
+        saves = []
+
+        def perform():
+            saves.append("save")
+            push_notice(None, "success", EMAIL_SENT)
+
+        flight = get_submit_flight("student-session")
+        self.assertEqual(_drive(st, flight, perform), "rerun")
+        again = get_submit_flight("student-session")
+        self.assertIs(again, flight)
+        st.events.clear()
+        self.assertEqual(
+            _drive(st, again, perform, prerun_click=False, on_restart=lambda: None),
+            "done",
+        )
+        third = get_submit_flight("student-session")
+        st.events.clear()
+        self.assertEqual(
+            _drive(st, third, perform, prerun_click=False, on_restart=lambda: None),
+            "done",
+        )
+        self.assertEqual(saves, ["save"])
+        self.assertEqual(third.phase, DONE)
+        self.assertEqual(third.notices[0]["message"], EMAIL_SENT)
+        self.assertIn(("success", EMAIL_SENT), st.events)
+
+    def test_restart_clears_the_email_sent_notice(self):
+        st = FakeSt()
+        flight = SubmitFlight()
+
+        def perform():
+            push_notice(None, "success", EMAIL_SENT)
+
+        _drive(st, flight, perform)
+        _drive(st, flight, perform, prerun_click=False, on_restart=lambda: None)
+        self.assertEqual(flight.phase, DONE)
+
+        st.restart_return = True
+        restarted = []
+        _drive(
+            st,
+            flight,
+            perform,
+            prerun_click=False,
+            on_restart=lambda: restarted.append("restart"),
+        )
+        self.assertEqual(restarted, ["restart"])
+        self.assertEqual(flight.phase, IDLE)
+        self.assertEqual(flight.notices, [])
+        self.assertEqual(st.session_state[PHASE_KEY], IDLE)
+        self.assertEqual(st.session_state[NOTICES_KEY], [])
 
 
 if __name__ == "__main__":

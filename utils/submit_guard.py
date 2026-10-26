@@ -19,11 +19,17 @@ Phases:
 * ``idle`` — a click may start a save.
 * ``busy`` — the button is disabled and a spinner is shown while the save runs.
 * ``settle`` — show the result and re-enable the button. A click delivered with
-  this run is the queued double-click and is ignored.
+  this run is the queued double-click and is ignored. The result is kept.
+* ``done`` — keep showing that same result on later script runs, with the
+  button enabled, until Restart or another submit.
 
 ``on_submit_click`` is the button ``on_click``. Streamlit runs that before the
-script body. After ``settle`` returns the phase to ``idle``, a later click
-starts another attempt.
+script body, and it builds a new ``__main__`` module for every run. The flight
+therefore has to live in this imported module. A dict on the app script is a
+different object by the time the result is drawn, so the email line would be
+gone. A click during ``done`` (or ``idle``) starts another attempt and clears
+the previous confirmation. The confirmation stays on screen after the spinner
+finishes: later script runs draw it again until Restart or another submit.
 """
 
 from __future__ import annotations
@@ -38,6 +44,7 @@ NOTICES_KEY = "feedback_submit_notices"
 IDLE = "idle"
 BUSY = "busy"
 SETTLE = "settle"
+DONE = "done"
 
 BUTTON_KEY = "submit_feedback_email"
 RESTART_KEY = "reflection_restart"
@@ -47,6 +54,34 @@ SPINNER_TEXT = "Saving your feedback and sending the email…"
 SAVE_FAILED_MESSAGE = "❌ Could not save submission. Email not sent."
 
 _notice_target = threading.local()
+
+# Survives the new __main__ module Streamlit creates on every script run.
+# A dict defined in the app script does not: the click callback and the
+# following run would not share the notices.
+_SUBMIT_FLIGHTS: dict[str, SubmitFlight] = {}
+_SUBMIT_FLIGHTS_GUARD = threading.Lock()
+
+
+def get_submit_flight(session_id: str) -> SubmitFlight:
+    """Return the save record for one Streamlit session.
+
+    ``session_id`` comes from the script-run context. The same id is used by
+    the button callback and by the script body, including the run after the
+    save reruns.
+    """
+    key = session_id or "default"
+    with _SUBMIT_FLIGHTS_GUARD:
+        flight = _SUBMIT_FLIGHTS.get(key)
+        if flight is None:
+            flight = SubmitFlight()
+            _SUBMIT_FLIGHTS[key] = flight
+        return flight
+
+
+def clear_submit_flights() -> None:
+    """Drop every cached flight. Tests use this to isolate sessions."""
+    with _SUBMIT_FLIGHTS_GUARD:
+        _SUBMIT_FLIGHTS.clear()
 
 
 class SubmitFlight:
@@ -78,10 +113,15 @@ def on_submit_click(
     flight: SubmitFlight,
     lock: Any = None,
 ) -> None:
-    """Arm a save from ``idle``. Clicks during ``busy`` or ``settle`` do nothing."""
+    """Arm a save from ``idle`` or ``done``.
+
+    Clicks during ``busy`` or ``settle`` do nothing, so a queued double-click
+    cannot start a second save. A click once the result is on screen (``done``)
+    clears that confirmation and starts the next attempt.
+    """
 
     def _mutate() -> bool:
-        if flight.phase != IDLE:
+        if flight.phase not in (IDLE, DONE):
             return False
         flight.token += 1
         flight.done_token = None
@@ -169,6 +209,19 @@ def _mirror_settle(st: Any, flight: SubmitFlight) -> None:
     st.session_state[NOTICES_KEY] = list(flight.notices)
 
 
+def _visible_notices(st: Any, flight: SubmitFlight) -> list[dict[str, Any]]:
+    """Notices to draw after the save.
+
+    The flight is the copy made during the save. ``session_state`` is the
+    copy that survives when this run's flight object is new and still empty,
+    which is what happens if the registry was left on the app script.
+    """
+    if flight.notices:
+        return list(flight.notices)
+    stored = st.session_state.get(NOTICES_KEY) or []
+    return [dict(notice) for notice in stored]
+
+
 def run_submit_phase(
     st: Any,
     perform: Callable[[], None],
@@ -186,9 +239,10 @@ def run_submit_phase(
     phase = st.session_state.get(PHASE_KEY, IDLE)
     # The run that did the save may have been stopped before it could copy
     # "settle" into session_state. The flight is the source of truth.
-    if flight.phase == SETTLE and phase == BUSY:
-        phase = SETTLE
-        _mirror_settle(st, flight)
+    if flight.phase in (SETTLE, DONE) and phase == BUSY:
+        phase = flight.phase
+        st.session_state[PHASE_KEY] = phase
+        st.session_state[NOTICES_KEY] = list(flight.notices)
 
     busy = phase == BUSY
     clicked = st.button(
@@ -199,8 +253,9 @@ def run_submit_phase(
     )
 
     # If on_click did not run before the body, arm on this pass and rerun so
-    # the disabled button is drawn before the save.
-    if phase == IDLE and clicked:
+    # the disabled button is drawn before the save. ``done`` is included so a
+    # later intentional click still starts a new attempt.
+    if phase in (IDLE, DONE) and clicked:
         on_click()
         _rerun(st)
         return
@@ -230,13 +285,22 @@ def run_submit_phase(
         _rerun(st)
         return
 
-    if phase == SETTLE:
-        show_notices(st, list(flight.notices))
+    if phase in (SETTLE, DONE):
+        # Draw again on every later script run. Replacing this output is what
+        # Streamlit does on the next run, so the notice has to still be here.
+        notices = _visible_notices(st, flight)
+        show_notices(st, notices)
         if on_restart is not None and st.button("Restart", key=RESTART_KEY):
             flight.phase = IDLE
             flight.notices = []
+            st.session_state[PHASE_KEY] = IDLE
+            st.session_state[NOTICES_KEY] = []
             on_restart()
-        flight.phase = IDLE
-        st.session_state[PHASE_KEY] = IDLE
-        st.session_state[NOTICES_KEY] = []
-        flight.notices = []
+            return
+        if notices and not flight.notices:
+            flight.notices = list(notices)
+        if phase == SETTLE:
+            flight.phase = DONE
+            st.session_state[PHASE_KEY] = DONE
+        st.session_state[NOTICES_KEY] = list(notices)
+        return
